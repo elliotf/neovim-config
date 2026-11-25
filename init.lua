@@ -978,42 +978,72 @@ require('todo-comments').setup {
 }
 
 -- [[ Treesitter ]] See `:help nvim-treesitter`
--- took from https://www.qu8n.com/posts/treesitter-migration-guide-for-nvim-0-12
+-- Based on kickstart.nvim's vim.pack treesitter setup
 do
-  local ensureInstalled = {
-    'bash',
-    'c',
-    'css',
-    'diff',
-    'go',
-    'html',
-    'lua',
-    'luadoc',
-    'markdown_inline',
-    'markdown',
-    'query',
-    'sql',
-    'svelte',
-    'typescript',
-    'vim',
-    'vimdoc',
-    'vue',
-    --'zk',
+  -- Parsers used only as injections inside other languages. Injections never
+  -- trigger a FileType event, so the on-demand install below can't catch them.
+  -- Every other parser installs the first time a file of that type is opened.
+  local ensure_installed = {
+    'css', -- <style> blocks in html/vue/svelte
+    'comment', -- TODO/FIXME in files
+    'diff', -- diffs in git commit messages (fugitive)
+    'html', -- html blocks in markdown
+    'javascript', -- <script lang="javascript"> in html/vue/svelte
+    'luadoc', -- Lua doc comments (---@param etc.)
+    'markdown_inline', -- inline markdown: bold, links, code spans
+    'regex', -- regexes in languages
+    'typescript', -- <script lang="ts"> in vue/svelte
   }
-  local alreadyInstalled = require('nvim-treesitter.config').get_installed()
-  local parsersToInstall = vim
-    .iter(ensureInstalled)
-    :filter(function(parser)
-      return not vim.tbl_contains(alreadyInstalled, parser)
-    end)
-    :totable()
-  require('nvim-treesitter').install(parsersToInstall)
+  require('nvim-treesitter').install(ensure_installed) -- no-op for parsers already installed
+
+  ---@param buf integer
+  ---@param language string
+  local function treesitter_try_attach(buf, language)
+    -- Buffer may have been closed while a parser was installing
+    if not vim.api.nvim_buf_is_valid(buf) then
+      return
+    end
+    -- Bail out if no parser can be loaded for this language
+    if not vim.treesitter.language.add(language) then
+      return
+    end
+
+    -- Treesitter highlighting (replaces regex syntax)
+    vim.treesitter.start(buf, language)
+
+    -- Treesitter indentation, only when the language ships an indent query;
+    -- otherwise keep Vim's own indentexpr
+    if vim.treesitter.query.get(language, 'indents') ~= nil then
+      vim.bo[buf].indentexpr = "v:lua.require'nvim-treesitter'.indentexpr()"
+    end
+  end
+
+  local available_parsers = require('nvim-treesitter').get_available()
   vim.api.nvim_create_autocmd('FileType', {
-    callback = function()
-      -- Enable treesitter highlighting and disable regex syntax
-      pcall(vim.treesitter.start)
-      -- Enable treesitter-based indentation
-      vim.bo.indentexpr = "v:lua.require'nvim-treesitter'.indentexpr()"
+    desc = 'Start treesitter, installing the parser on first use',
+    group = vim.api.nvim_create_augroup('treesitter-on-demand', { clear = true }),
+    callback = function(args)
+      local buf, filetype = args.buf, args.match
+
+      -- Map filetype to parser name (e.g. 'typescriptreact' -> 'tsx', 'sh' -> 'bash')
+      local language = vim.treesitter.language.get_lang(filetype)
+      if not language then
+        return
+      end
+
+      local installed_parsers = require('nvim-treesitter').get_installed 'parsers'
+      if vim.tbl_contains(installed_parsers, language) then
+        -- Parser already installed: attach now
+        treesitter_try_attach(buf, language)
+      elseif vim.tbl_contains(available_parsers, language) then
+        -- nvim-treesitter knows this parser: build it in the background, attach when done
+        require('nvim-treesitter').install(language):await(function()
+          treesitter_try_attach(buf, language)
+        end)
+      else
+        -- Not from nvim-treesitter, but Neovim may bundle one (c, lua, vim, markdown, ...)
+        treesitter_try_attach(buf, language)
+      end
     end,
   })
 end
