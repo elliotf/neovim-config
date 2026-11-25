@@ -209,6 +209,37 @@ vim.cmd [[
   au BufLeave,FocusLost * silent! wall " automatically write buffer when switching away
 ]]
 
+-- Be able to switch back and forth between recent tabs
+--  let g:lasttab = 1
+--  nnoremap `` :exe "tabn ".g:lasttab<CR>
+--  au TabLeave * let g:lasttab = tabpagenr()
+-- The overengineered version
+local tab_mru = { vim.api.nvim_get_current_tabpage() }
+
+vim.api.nvim_create_autocmd('TabEnter', {
+  desc = 'Track tab MRU stack',
+  callback = function()
+    local cur = vim.api.nvim_get_current_tabpage()
+    for i = #tab_mru, 1, -1 do
+      if tab_mru[i] == cur then table.remove(tab_mru, i) end
+    end
+    table.insert(tab_mru, cur)
+  end,
+})
+
+vim.keymap.set('n', '``', function()
+  local cur = vim.api.nvim_get_current_tabpage()
+  for i = #tab_mru, 1, -1 do
+    local t = tab_mru[i]
+    if not vim.api.nvim_tabpage_is_valid(t) then
+      table.remove(tab_mru, i)
+    elseif t ~= cur then
+      vim.api.nvim_set_current_tabpage(t)
+      return
+    end
+  end
+end, { desc = 'Jump to previous tab' })
+
 -- [[ Basic Autocommands ]]
 --  See `:help lua-guide-autocommands`
 
@@ -283,17 +314,24 @@ require('lazy').setup({
   --    ]]
   --  end,
   --},
-  { -- This module seems to get grumpy with my fugitive bindings and ends up h0rking nvim, at least on a mac in wezterm
-    'sphamba/smear-cursor.nvim',
-    config = function()
-      require('smear_cursor').setup {
-        -- time_interval = 7,
-      }
-    end,
-  },
+  -- using https://github.com/wezterm/wezterm/pull/7737 instead
+  -- { -- This module seems to get grumpy with my fugitive bindings and ends up h0rking nvim, at least on a mac in wezterm
+  --   'sphamba/smear-cursor.nvim',
+  --   config = function()
+  --     require('smear_cursor').setup {
+  --       -- time_interval = 7,
+  --     }
+  --   end,
+  -- },
   {
     'towolf/vim-helm',
     config = function() end,
+  },
+  {
+    'andymass/vim-matchup',
+    init = function()
+      vim.g.matchup_matchparen_offscreen = { method = 'popup' }
+    end,
   },
   { -- works, but is not pretty
     'crispgm/nvim-tabline',
@@ -383,6 +421,10 @@ require('lazy').setup({
   },
   {
     'tpope/vim-fugitive',
+    config = function() end,
+  },
+  {
+    'godlygeek/tabular',
     config = function() end,
   },
   {
@@ -554,31 +596,32 @@ require('lazy').setup({
       end
 
       function custom_actions.multi_action(prompt_bufnr, action)
-        local close_bufnr = -1
+        -- read selections before closing; the picker is gone after close
+        local entries = custom_actions.get_entries(prompt_bufnr)
+        actions.close(prompt_bufnr) -- tear down picker cleanly first
 
-        -- if the first split/window on this tab is an unnamed, unmodified buffer, close it after we open our splits
+        local close_bufnr = -1
         local winid = vim.api.nvim_tabpage_list_wins(0)[1]
         local bufnr = vim.api.nvim_win_get_buf(winid)
-        local bufname = vim.api.nvim_buf_get_name(bufnr)
-        local is_modified = vim.api.nvim_get_option_value('modified', { buf = bufnr })
-        if bufname == '' and not is_modified then
+        if vim.api.nvim_buf_get_name(bufnr) == '' and not vim.bo[bufnr].modified then
           close_bufnr = bufnr
         end
 
-        -- do what we've been asked to do for each entry
-        for _, entry in ipairs(custom_actions.get_entries(prompt_bufnr)) do
-          local lnum = entry.lnum or 1
-          --vim.cmd(string.format("%s %s", ":e!", entry.value))
-          vim.cmd(string.format('%s +%d %s', action, lnum, entry.filename or entry.value))
+        for _, entry in ipairs(entries) do
+          local cmd = string.format('%s +%d %s', action, entry.lnum or 1, vim.fn.fnameescape(entry.filename or entry.value))
+          local ok, err = pcall(function()
+            vim.cmd(cmd)
+          end)
+          if not ok then
+            vim.notify(tostring(err), vim.log.levels.WARN)
+          end
         end
 
-        vim.cmd 'stopinsert'
-
-        -- if there is a buf to close, do so
-        if close_bufnr > -1 then
-          vim.api.nvim_buf_delete(close_bufnr, {})
+        if close_bufnr > -1 and vim.api.nvim_buf_is_valid(close_bufnr) then
+          pcall(vim.api.nvim_buf_delete, close_bufnr, {})
         end
       end
+
       function custom_actions.multi_vsplit(prompt_bufnr)
         custom_actions.multi_action(prompt_bufnr, ':vsplit!')
       end
@@ -1024,6 +1067,7 @@ require('lazy').setup({
           terraform = { 'terraform_fmt' },
           hcl = { 'terraform_fmt' },
 
+          markdown = { 'prettier', 'injected' }, -- install via `yay -S pgformatter`
           pgsql = { 'pg_format' }, -- install via `yay -S pgformatter`
           sql = { 'pg_format' },
           svelte = { 'svelte_fmt' }, -- globally install prettier, prettier-plugin-svelte
@@ -1052,7 +1096,10 @@ require('lazy').setup({
             args = { 'format', '-', '-q' },
           },
           pg_format = {
-            prepend_args = { '-b', '-s', '2' }, -- Example: use tabs with 2 spaces
+            prepend_args = {
+              '-b', -- leading commas to reduce # of lines modified when adding/removing lines
+              '-s', '2' -- two space indentation
+            }, -- Example: use tabs with 2 spaces
             -- Refer to 'pg_format --help' for available options
           },
           svelte_fmt = {
@@ -1529,6 +1576,17 @@ require('lazy').setup({
   },
 })
 
+local function diffMergeBase(commit_like)
+  return function()
+    local base = vim.fn.systemlist({ 'git', 'merge-base', commit_like, 'HEAD' })[1]
+    if vim.v.shell_error ~= 0 or not base then
+      vim.notify('git merge-base failed: ' .. (base or ''), vim.log.levels.ERROR)
+      return
+    end
+    vim.cmd('Gvdiffsplit! ' .. base)
+  end
+end
+
 --vim.wo.foldexpr = 'v:lua.vim.treesitter.foldexpr()'
 --vim.wo.foldmethod = 'expr'
 vim.wo.foldmethod = 'indent'
@@ -1549,11 +1607,14 @@ vim.keymap.set('v', '<leader>y', '"+y', { desc = 'copy to system register' })
 --vim.keymap.set('n', '<leader>y', '"+y :let @*=@+<CR>', { desc = 'copy to system and primary register' })
 vim.keymap.set('n', '<leader>gbl', '<cmd>Git blame -wC<CR>', { desc = 'Git blame, ignoring whitespace' })
 vim.keymap.set('n', '<leader>gdi', '<cmd>Gvdiffsplit!<CR>', { desc = 'Git diff' })
+vim.keymap.set('n', '<leader>gdma', diffMergeBase('origin/master'), { desc = 'Git diff vs merge-base of origin/master' })
+
 vim.keymap.set('n', '<leader>wm', '<C-w>|<C-w>_', { desc = 'Maximize the active split' })
 vim.keymap.set('n', '<leader>we', '<C-w>=', { desc = 'Equalize all splits' })
+vim.keymap.set('n', '<leader>wc', '<cmd>vertical resize 0<CR>', { desc = 'Vertically collapse current split' })
 vim.keymap.set('n', '<leader>ww', '<cmd>set wrap!<CR>', { desc = 'Toggle Word Wrap' })
 
--- Let j and k move down visual lines instead of skipping entire blocks of wrapped text
+-- j and k move across visual lines instead of content lines (skipping entire blocks of wrapped text)
 vim.keymap.set('n', 'j', 'gj', { silent = true })
 vim.keymap.set('n', 'k', 'gk', { silent = true })
 -- this is a long line to test word wrap functionality and show how the cursor moves when the line is wrapped and I potentially move down a line. I will now copy this segment another time to have a very long line. -- this is a long line to test word wrap functionality and show how the cursor moves when the line is wrapped and I potentially move down a line. I will now copy this segment another time to have a very long line.
