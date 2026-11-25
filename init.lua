@@ -327,12 +327,12 @@ require('lazy').setup({
     'towolf/vim-helm',
     config = function() end,
   },
-  {
-    'andymass/vim-matchup',
-    init = function()
-      vim.g.matchup_matchparen_offscreen = { method = 'popup' }
-    end,
-  },
+  -- {
+  --   'andymass/vim-matchup',
+  --   init = function()
+  --     vim.g.matchup_matchparen_offscreen = { method = 'popup' }
+  --   end,
+  -- },
   { -- works, but is not pretty
     'crispgm/nvim-tabline',
     config = function()
@@ -1516,6 +1516,17 @@ require('lazy').setup({
     --    - Show your current context: https://github.com/nvim-treesitter/nvim-treesitter-context
     --    - Treesitter + textobjects: https://github.com/nvim-treesitter/nvim-treesitter-textobjects
   },
+  { -- Pin enclosing function/blocks to top of window
+    'nvim-treesitter/nvim-treesitter-context',
+    event = 'VeryLazy',
+    opts = {
+      max_lines = 0, -- cap how much screen the header can take (0 = no limit)
+      multiline_threshold = 1, -- show only the first line of each context node
+      trim_scope = 'outer', -- when over max_lines, drop outermost scopes first
+      --mode = 'cursor', -- context follows cursor line ('topline' = follows top of window)
+      mode = 'topline', -- context follows cursor line ('topline' = follows top of window)
+    },
+  },
   { -- nice, but only shows diagnostics for the line that I am on
     'rachartier/tiny-inline-diagnostic.nvim',
     event = 'VeryLazy', -- Or `LspAttach`
@@ -1526,6 +1537,54 @@ require('lazy').setup({
       }
       vim.diagnostic.config { virtual_text = false } -- Only if needed in your configuration, if you already have native LSP diagnostics
     end,
+  },
+  {
+    'rgroli/other.nvim',
+    event = 'VeryLazy', -- Or `LspAttach`
+    config = function()
+      require('other-nvim').setup {
+        mappings = {
+          -- builtin mappings
+          --'livewire',
+          --'angular',
+          --'laravel',
+          --'rails',
+          'golang',
+          --'python',
+          'react',
+          'rust',
+          --'elixir',
+          --'clojure',
+          -- custom mapping
+          --{
+          --  pattern = '/path/to/file/src/app/(.*)/.*.ext$',
+          --  target = '/path/to/file/src/view/%1/',
+          --  transformer = 'lowercase',
+          --},
+        },
+        --transformers = {
+        --  -- defining a custom transformer
+        --  lowercase = function(inputString)
+        --    return inputString:lower()
+        --  end,
+        --},
+        --style = {
+        --  -- How the plugin paints its window borders
+        --  -- Allowed values are none, single, double, rounded, solid and shadow
+        --  border = 'solid',
+
+        --  -- Column seperator for the window
+        --  seperator = '|',
+
+        --  -- width of the window in percent. e.g. 0.5 is 50%, 1.0 is 100%
+        --  width = 0.7,
+
+        --  -- min height in rows.
+        --  -- when more columns are needed this value is extended automatically
+        --  minHeight = 2,
+        --},
+      }
+    end
   },
 
   -- The following comments only work if you have downloaded the kickstart repo, not just copy pasted the
@@ -1575,10 +1634,35 @@ require('lazy').setup({
     },
   },
 })
+-- local function diffMergeBase(commit_like)
+--   return function()
+--     local base = vim.fn.systemlist({ 'git', 'merge-base', commit_like, 'HEAD' })[1]
+--     if vim.v.shell_error ~= 0 or not base then
+--       vim.notify('git merge-base failed: ' .. (base or ''), vim.log.levels.ERROR)
+--       return
+--     end
+--     vim.cmd('Gvdiffsplit! ' .. base)
+--   end
+-- end
+
+local function defaultBaseRef()
+  for _, ref in ipairs { 'origin/main', 'origin/master' } do
+    vim.fn.system { 'git', 'rev-parse', '--verify', '--quiet', ref }
+    if vim.v.shell_error == 0 then
+      return ref
+    end
+  end
+end
 
 local function diffMergeBase(commit_like)
   return function()
-    local base = vim.fn.systemlist({ 'git', 'merge-base', commit_like, 'HEAD' })[1]
+    local ref = commit_like or defaultBaseRef()
+    if not ref then
+      vim.notify('no origin/main or origin/master found', vim.log.levels.ERROR)
+      return
+    end
+
+    local base = vim.fn.systemlist({ 'git', 'merge-base', ref, 'HEAD' })[1]
     if vim.v.shell_error ~= 0 or not base then
       vim.notify('git merge-base failed: ' .. (base or ''), vim.log.levels.ERROR)
       return
@@ -1607,7 +1691,8 @@ vim.keymap.set('v', '<leader>y', '"+y', { desc = 'copy to system register' })
 --vim.keymap.set('n', '<leader>y', '"+y :let @*=@+<CR>', { desc = 'copy to system and primary register' })
 vim.keymap.set('n', '<leader>gbl', '<cmd>Git blame -wC<CR>', { desc = 'Git blame, ignoring whitespace' })
 vim.keymap.set('n', '<leader>gdi', '<cmd>Gvdiffsplit!<CR>', { desc = 'Git diff' })
-vim.keymap.set('n', '<leader>gdma', diffMergeBase('origin/master'), { desc = 'Git diff vs merge-base of origin/master' })
+vim.keymap.set('n', '<leader>gdma', diffMergeBase(), { desc = '[G]it [d]iff vs merge-base of (origin/[ma]ster or origin/[ma]in)' })
+vim.keymap.set('n', '<leader>ot', '<cmd>:OtherVSplit<CR>', { desc = '[O]pen [t]est for current buffer in a split' })
 
 vim.keymap.set('n', '<leader>wm', '<C-w>|<C-w>_', { desc = 'Maximize the active split' })
 vim.keymap.set('n', '<leader>we', '<C-w>=', { desc = 'Equalize all splits' })
