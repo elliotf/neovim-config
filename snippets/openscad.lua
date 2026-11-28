@@ -11,6 +11,11 @@ return {
   s("cl", fmt("echo(\"{}: \", {});", { i(1), rep(1), })),
   s("cub", fmt("cube([0,0,0],center=true);", { })),
   s("cyl", fmt("cyl(r={},h={},center=true);", { i(1), i(0) })),
+  s("form", fmt([[for(m=[0,1]) {{
+  mirror([m,0,0]) {{
+    {}
+  }}
+}}]], { i(0) })),
   s("forx", fmt([[for(x=[left,right]) {{
   translate([x*({}),0,0]) {{
     {}

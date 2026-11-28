@@ -759,7 +759,7 @@ do
     starpls = {},
     -- clangd = {},
     pyright = {},
-    -- rust_analyzer = {},
+    rust_analyzer = {},
     --copilot = {},
     cssls = {},
     emmet_language_server = {},
